@@ -1,0 +1,94 @@
+# Background for dd In Disc Acquisition
+# Encase's and FTKimager are commercial and not present on our system, so dd seem to be the logical choice. There are some 
+# contenders like guymager and ddrescue, but I went with the more traditional approach.  Guymager is a GUI and present in 
+# KALI, but I didn't want to deal with the overhead.  There is more familiarity with dd, so it was chosen.  dd is ubiquitious 
+# on nearly every GNU/Linux/UNIX system and there are many flavors of it, eg ddrescue, dcfldd (fork), dc3dd (patched), etc.  
+
+
+# STEP 00: Wipe acquistion hard drive 
+dd if=/dev/zero of=/dev/sdX bs=4k conv=noerror,sync
+sudo parted /dev/sdX mklabel msdos
+sudo parted -a opt /dev/sdX mkpart primary ext4 0% 100%
+
+
+# STEP 01: List partitions, md5sum suspect hard drive, & acquire FDE password
+cd Archive                                                                ### create Archive directory on acquisition drive
+fdisk -l
+fdisk -l > fdisk.list.txt
+md5sum /dev/sdX > IncidentName.IP.DATE_-_SOURCE.md5
+
+# FDE password (BitLocker & LUKS) 
+#Bitlocker
+manage-bde.exe -protectors -get c: -Type recoverypassword                  ### bitlocker key has 8 segments
+123456-123456-123456-123456-123456-123456-123456-123456
+
+# LUKS
+dmsetup ls --target crypt                                                  ### check for open crypt devices
+luks-12345678-abcd-1234-abcd-123456789abc       (253, 0)
+^
+|
++---------------------------------------------- <MAP>                      ### copy or take note of <MAP>
+
+mount | grep vdc
+findmnt /dev/mapper/luks-70f38846-8d66-4107-be9c-51832295b3a3
+
+lsblk | grep -B1 luks-70f38846-8d66-4107-be9c-51832295b3a3                 ### find partition with open map using: lsblk, findmnt, df,
+└─sda2                                          8:2    0 697.7G  0 part    ### mount, or /etc/fstab 
+  └─luks-70f38846-8d66-4107-be9c-51832295b3a3 253:0    0 697.6G  0 crypt
+
+dmsetup table luks-70f38846-8d66-4107-be9c-51832295b3a3 --showkeys         ### extract LUKS master key & use it to add a new key
+0 1463044096 crypt aes-xts-plain64                                         ### safeguard this
+1111222aaaaaa11111111118e507a9b112222aaabbb22222222111111521111122222222222222222llllllllllllR222222222222222222222211111115916d 0 8:2 4096
+
+
+# STEP 02: DETECTION - HPA & DCO (Service Partitions eg restore)
+# check presence of HPA & DCO
+# HPA detection: verify if Host Protected Area (HPA) is enabled; show max sectors available vs what may be visible
+hdparm -N /dev/sdX
+
+# HPA disable; set max sectors for p{arg}
+hdparm -N p78165360 /dev/sdX                                              
+
+# verify again
+hdparm -N /dev/sdX                       
+
+# DCO detection
+hdparm --dco-identify /dev/sdX
+
+# DCO factory reset
+hdparm --dco-restore /dev/sdX
+
+
+# STEP 03: Create image, log, and md5 sum; in one-liner
+dd if=/dev/sdX bs=4k conv=sync,noerror status=progress | tee IncidentName.IP.DATE.dd \
+2> errors.IncidentName.IP.DATE.dd.error.log | md5sum > IncidentName.IP.DATE_-_TARGET.md5
+
+#### NB: dd-rescue is another native tool you can use that is native to our image; 
+#### that may be more forgiving if dd gives some errors for some seemingly odd error
+
+# example of creating md5sum of target drive seperately
+md5sum ./IncidentName.IP.DATE.dd > ./IncidentName.IP.DATE_-_TARGET.md5
+
+
+# Explanation of dd command, options, and arguments
+    if                          => input file
+    /dev/sdX                    => linux name of physical disk
+    /dev/zero                   => infinite source of zeros
+    of                          => output file
+    IncidentName.IP.DATE.dd     => name of image file
+    bs                          => block size
+    4k                          => size of block size
+    noerror                     => continue if read error is encountered from source drive
+    sync                        => null fill errors
+
+
+# STEP 04: Mount image
+mkdir ~/mnt/tmp
+sudo losetup -f                                                   ### verify first unused device
+sudo losetup -rf ./IncidentName.IP.DATE.dd                        ### --read-only
+losetup                                                           ### verify loop device location 
+sudo mount -o ro,loop /dev/loop1 ~/mnt/tmp
+ls ./mnt/tmp/
+umount ./mnt/tmp                                                  ### to unmount image
+losetup -D                                                        ### to unmount loop device
+
